@@ -61,15 +61,19 @@ func New(id [frame.SessionIDLen]byte, target string, needsSYN bool) *Session {
 // exceeds TxBufHighWater. Safe to call concurrently with DrainTx.
 func (s *Session) EnqueueTx(data []byte) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for len(s.txBuf) > TxBufHighWater && !s.closeReq {
 		s.txCond.Wait()
 	}
 	if s.closeReq {
+		s.mu.Unlock()
 		return
 	}
 	s.txBuf = append(s.txBuf, data...)
-	s.notifyTxLocked()
+	cb := s.OnTx
+	s.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
 }
 
 // RequestClose marks the session for shutdown. The next DrainTx will emit a
@@ -78,8 +82,11 @@ func (s *Session) RequestClose() {
 	s.mu.Lock()
 	s.closeReq = true
 	s.txCond.Broadcast()
-	s.notifyTxLocked()
+	cb := s.OnTx
 	s.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
 }
 
 // CloseRx closes RxChan if not already closed. Idempotent.
@@ -222,13 +229,5 @@ func (s *Session) ProcessRx(f *frame.Frame) {
 	}
 	if closeAfter {
 		close(s.RxChan)
-	}
-}
-
-func (s *Session) notifyTxLocked() {
-	if s.OnTx != nil {
-		// Don't hold the lock for the user callback.
-		cb := s.OnTx
-		go cb()
 	}
 }

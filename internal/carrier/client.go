@@ -26,7 +26,7 @@ const (
 
 	// pollTimeout is the per-request HTTP ceiling; should comfortably exceed
 	// the server's long-poll window (~25s).
-	pollTimeout = 60 * time.Second
+	pollTimeout = 120 * time.Second
 )
 
 // Config bundles everything the carrier needs to talk to the relay.
