@@ -10,6 +10,14 @@ A SOCKS5 VPN that tunnels **raw TCP** through a Google Apps Script web app to yo
 
 > ⚠️ **You need a small VPS for the exit server.** Unlike pure-Apps-Script proxies, this project tunnels raw TCP — anything SOCKS5 can carry — so a real `net.Dial` has to happen somewhere. A $4/month DigitalOcean droplet is plenty. In exchange you can tunnel SSH, IMAP, custom protocols, anything — not just HTTP.
 
+## Important Notes
+
+- Never share `aes_key_hex` with anyone. Anyone with this key can use your tunnel/VPS as if they are you.
+- A server with public internet access is required. Your exit server must be reachable from Google Apps Script.
+- Each Google Apps Script deployment ID has a quota of about 20,000 executions per day, and the quota resets around 10:30 AM Iran time (GMT+3:30).
+- You do not need to install a local MITM certificate in this project. The certificate setup in `MasterHttpRelayVPN` is for that project's architecture and is not required here.
+- This project was inspired by the idea in the main repository: https://github.com/masterking32/MasterHttpRelayVPN
+
 ---
 
 ## Disclaimer
@@ -79,17 +87,18 @@ cp client_config.example.json client_config.json
 cp server_config.example.json   server_config.json
 ```
 
-Open both and paste the AES hex string into `aes_key_hex` in **both files**. Leave `script_url` blank for now — you'll fill it in after Step 5.
+Open both and paste the AES hex string into `tunnel_key` (client) and `aes_key_hex` (server). Leave `script_key` blank for now — you'll fill it in after Step 5.
 
 `client_config.json`:
 
 ```json
 {
-  "listen_addr": "127.0.0.1:1080",
-  "google_ip":   "216.239.38.120:443",
-  "sni_host":    "www.google.com",
-  "script_url":  "PASTE_AFTER_STEP_5",
-  "aes_key_hex": "PASTE_OUTPUT_OF_GEN_KEY"
+  "socks_host":  "127.0.0.1",
+  "socks_port":  1080,
+  "google_host": "216.239.38.120",
+  "sni":         "www.google.com",
+  "script_key":  "PASTE_DEPLOYMENT_ID_ONLY",
+  "tunnel_key":  "PASTE_OUTPUT_OF_GEN_KEY"
 }
 ```
 
@@ -118,10 +127,10 @@ This is the dumb pipe that disguises your traffic as Google.
 7. Set:
    - **Execute as:** Me
    - **Who has access:** Anyone
-8. Click **Deploy** and copy the `/exec` URL.
-9. Paste that URL into `script_url` in `client_config.json`.
+8. Click **Deploy** and copy the deployment ID from the `/exec` URL (the part between `/s/` and `/exec`).
+9. Paste that value into `script_key` in `client_config.json`.
 
-> ⚠️ **Editing the script doesn't update the live version.** Every time you change `Code.gs` you must create a **new deployment** and update `script_url` in your client config.
+> ⚠️ **Editing the script doesn't update the live version.** Every time you change `Code.gs` you must create a **new deployment** and update `script_key` in your client config.
 
 Verify the deployment:
 
@@ -176,7 +185,7 @@ Configure your browser/system to use SOCKS5 `127.0.0.1:1080`. **Use `socks5h://`
 
 ## LAN Sharing (Optional)
 
-By default the client listens on `127.0.0.1:1080` so only your computer can use it. To share with other devices on your local network, change `listen_addr` in `client_config.json` to `0.0.0.0:1080` and restart.
+By default the client listens on `127.0.0.1:1080` so only your computer can use it. To share with other devices on your local network, set `socks_host` to `0.0.0.0` in `client_config.json` and restart.
 
 > ⚠️ **Security note:** Anyone on your LAN can then proxy through your tunnel and consume your Apps Script quota. Only do this on trusted networks.
 
@@ -188,11 +197,12 @@ By default the client listens on `127.0.0.1:1080` so only your computer can use 
 
 | Field | Default | What it does |
 |---|---|---|
-| `listen_addr` | `127.0.0.1:1080` | Where the local SOCKS5 listener binds. Change to `0.0.0.0:1080` for LAN sharing. |
-| `google_ip` | `216.239.38.120:443` | Google edge IP to dial. Any 216.239.x.120 served by Google works. |
-| `sni_host` | `www.google.com` | SNI presented during TLS handshake. The decoy an on-path observer sees. |
-| `script_url` | — | Your Apps Script `/exec` URL from Step 5. |
-| `aes_key_hex` | — | 64-char hex AES-256 key. Must match the server byte-for-byte. |
+| `socks_host` | `127.0.0.1` | Host/IP for the local SOCKS5 listener. Set to `0.0.0.0` for LAN sharing. |
+| `socks_port` | `1080` | Port for the local SOCKS5 listener. |
+| `google_host` | `216.239.38.120` | Google edge IP/host to dial (port is fixed to `443`). |
+| `sni` | `www.google.com` | SNI presented during TLS handshake. |
+| `script_key` | — | Your Apps Script deployment ID only (no full URL needed). |
+| `tunnel_key` | — | 64-char hex AES-256 key. Must match the server byte-for-byte. |
 
 ### Server (`server_config.json`)
 
@@ -205,7 +215,7 @@ By default the client listens on `127.0.0.1:1080` so only your computer can use 
 
 ## Updating the Apps Script forwarder
 
-If you change `Code.gs` — for example to point at a new droplet IP — you must create a **new deployment** in the Apps Script editor (Deploy → **New deployment**, not just "Manage deployments"). Saving alone does nothing; the live `/exec` URL serves the published version. After redeploying, update `script_url` in `client_config.json`.
+If you change `Code.gs` — for example to point at a new droplet IP — you must create a **new deployment** in the Apps Script editor (Deploy → **New deployment**, not just "Manage deployments"). Saving alone does nothing; the live `/exec` URL serves the published version. After redeploying, update `script_key` in `client_config.json`.
 
 ---
 

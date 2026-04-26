@@ -113,13 +113,13 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 
 	body, err := frame.EncodeBatch(c.aead, frames)
 	if err != nil {
-		log.Printf("[carrier] encode batch: %v", err)
+		log.Printf("[carrier] failed to prepare encrypted request batch: %v", err)
 		return false
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.ScriptURL, bytes.NewReader(body))
 	if err != nil {
-		log.Printf("[carrier] new request: %v", err)
+		log.Printf("[carrier] failed to build relay request: %v", err)
 		return false
 	}
 	req.Header.Set("Content-Type", "text/plain")
@@ -127,7 +127,7 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("[carrier] post: %v", err)
+			log.Printf("[carrier] relay request failed: %v (check internet access, script_key, and google_host)", err)
 			time.Sleep(time.Second) // back off on transport errors
 		}
 		return false
@@ -136,7 +136,7 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("[carrier] read response: %v", err)
+		log.Printf("[carrier] failed to read relay response: %v", err)
 		return false
 	}
 
@@ -144,13 +144,13 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 		return len(frames) > 0
 	}
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[carrier] non-OK status: %d", resp.StatusCode)
+		log.Printf("[carrier] relay returned HTTP %d (verify Apps Script deployment is live and access is set to Anyone)", resp.StatusCode)
 		return false
 	}
 
 	rxFrames, err := frame.DecodeBatch(c.aead, respBody)
 	if err != nil {
-		log.Printf("[carrier] decode batch: %v", err)
+		log.Printf("[carrier] relay response was invalid (possibly HTML/error page instead of encrypted data): %v", err)
 		return len(frames) > 0
 	}
 
