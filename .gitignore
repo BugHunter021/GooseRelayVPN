@@ -1,0 +1,18 @@
+# Local configs (use *_config.example.json as templates)
+client_config.json
+server_config.json
+
+# Built binaries
+/client
+/server
+/relay-client
+/relay-server
+
+# Go build/test artifacts
+*.test
+*.out
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

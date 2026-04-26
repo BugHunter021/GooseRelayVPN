@@ -1,0 +1,7 @@
+{
+  "listen_addr": "127.0.0.1:1080",
+  "google_ip": "216.239.38.120:443",
+  "sni_host": "www.google.com",
+  "script_url": "https://script.google.com/macros/s/REPLACE_WITH_DEPLOYMENT_ID/exec",
+  "aes_key_hex": "REPLACE_WITH_OUTPUT_OF_scripts_gen-key.sh"
+}
