@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Crypto wraps an AES-256-GCM AEAD with the relay-tunnel envelope format:
@@ -105,7 +106,9 @@ func DecodeBatch(c *Crypto, body []byte) ([]*Frame, error) {
 	if len(body) == 0 {
 		return nil, nil
 	}
-	raw, err := base64.StdEncoding.DecodeString(string(body))
+	// Trim whitespace — Apps Script's getContentText() can append a trailing
+	// newline which breaks strict base64 decoding.
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(body)))
 	if err != nil {
 		return nil, fmt.Errorf("batch: base64 decode: %w", err)
 	}
