@@ -226,6 +226,54 @@ func (c *Client) NewSession(target string) *session.Session {
 	return s
 }
 
+// Shutdown sends an RST frame for every active session so the server can
+// release the corresponding upstream connections immediately rather than
+// waiting for its idle-session GC. Intended to be called from a SIGINT/SIGTERM
+// handler before canceling the main context. ctx bounds how long we'll wait
+// for the final POST to complete.
+//
+// Best-effort: if the POST fails (network gone, server unreachable) we just
+// return — the server's idle GC is the safety net for that case.
+func (c *Client) Shutdown(ctx context.Context) {
+	c.mu.Lock()
+	if len(c.sessions) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	rsts := make([]*frame.Frame, 0, len(c.sessions))
+	for id := range c.sessions {
+		rsts = append(rsts, &frame.Frame{
+			SessionID: id,
+			Flags:     frame.FlagRST,
+		})
+	}
+	c.mu.Unlock()
+
+	body, err := frame.EncodeBatch(c.aead, rsts)
+	if err != nil {
+		log.Printf("[carrier] shutdown: encode failed: %v", err)
+		return
+	}
+
+	_, scriptURL := c.pickRelayEndpoint()
+	if scriptURL == "" {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, scriptURL, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "text/plain")
+
+	log.Printf("[carrier] shutdown: sending RST for %d active sessions", len(rsts))
+	resp, err := c.pickHTTPClient().Do(req)
+	if err != nil {
+		log.Printf("[carrier] shutdown: send failed (server idle GC will clean up): %v", err)
+		return
+	}
+	_ = resp.Body.Close()
+}
+
 // Run spawns numPollWorkers concurrent poll goroutines and blocks until ctx
 // is canceled. Parallel workers eliminate head-of-line blocking: while one
 // worker waits for a server long-poll response, the others immediately dispatch

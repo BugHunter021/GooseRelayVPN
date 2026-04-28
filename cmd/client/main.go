@@ -189,6 +189,11 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
-	log.Println("[client] shutting down")
+	log.Println("[client] shutting down — notifying server of active sessions")
+	// Send RSTs for active sessions so the server can release their upstream
+	// connections immediately. Bounded so a slow server can't block exit.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	carr.Shutdown(shutdownCtx)
+	shutdownCancel()
 	cancel()
 }
