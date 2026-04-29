@@ -333,6 +333,8 @@ CLIENT  INFO    ready: local SOCKS5 is listening on 127.0.0.1:1080
 | `sni` | `www.google.com` | مقدار SNI در TLS. یک رشته یا آرایه می‌پذیرد — `["www.google.com", "mail.google.com", "accounts.google.com"]` — هر SNI اتصال و bucket جداگانه دارد که می‌تواند پهنای باند را در مناطقی که per-domain throttle دارند چند برابر کند. |
 | `script_keys` | — | آرایه Deployment IDهای Apps Script (بدون URL کامل). حداقل یک ID لازم است؛ هر ID اضافه هم ۳ worker موازی بیشتر می‌آورد هم ~۲۰٬۰۰۰ درخواست روزانه quota جداگانه. |
 | `tunnel_key` | — | کلید AES-256 به‌صورت hex (۶۴ کاراکتر). باید با سرور یکسان باشد. |
+| `socks_user` | *(اختیاری)* | نام کاربری SOCKS5 (RFC 1929). وقتی تنظیم شود، کلاینت‌ها باید احراز هویت کنند وگرنه اتصال رد می‌شود. باید همراه با `socks_pass` تنظیم شود — هر دو با هم یا هیچ‌کدام. |
+| `socks_pass` | *(اختیاری)* | رمز SOCKS5 متناظر با `socks_user`. |
 
 ### سرور (`server_config.json`)
 
@@ -393,6 +395,12 @@ GooseRelayVPN/
 │   ├── carrier/                    # Long-poll loop + domain-fronted HTTPS client
 │   ├── exit/                       # VPS HTTP handler: decrypt, demux, dial upstream
 │   └── config/                     # JSON config loaders
+├── bench/
+│   ├── harness/main.go             # E2E benchmark: real binaries, loopback sink
+│   ├── sink/main.go                # TCP sink (echo / sized / source / quick modes)
+│   ├── diff/main.go                # JSON result comparator with noise-floor logic
+│   ├── baselines/                  # Committed baseline JSON files
+│   └── bench.sh                   # Build + run + compare orchestrator
 ├── apps_script/
 │   └── Code.gs                     # ~30-line dumb forwarder
 ├── scripts/
@@ -432,6 +440,27 @@ GooseRelayVPN/
 - **Apps Script هر `doPost` را در داشبورد گوگل لاگ می‌کند** (فقط تعداد و مدت — Apps Script هرگز متن خام را نمی‌بیند).
 - **`socks_host` کلاینت را روی `127.0.0.1` نگه دارید** مگر اینکه واقعاً قصد اشتراک LAN داشته باشید.
 - **هر deployment در Apps Script محدودیت ~۲۰٬۰۰۰ فراخوانی در روز** روی حساب رایگان گوگل دارد.
+
+---
+
+## مشارکت در توسعه
+
+Pull request خوش‌آمد است. برای هر تغییری که به carrier loop، session layer یا poll behavior مربوط می‌شود، لطفاً نتایج benchmark را هم ضمیمه کنید تا بازبینی‌کنندگان بتوانند تأثیر عملکردی را ارزیابی کنند.
+
+پوشه `bench/` یک harness end-to-end دارد که باینری‌های واقعی `goose-client` و `goose-server` را در حالت loopback راه‌اندازی می‌کند و throughput، TTFB، session rate و idle CPU را اندازه می‌گیرد.
+
+```bash
+# ساخت باینری‌ها و اجرای کامل benchmark
+bash bench/bench.sh
+```
+
+harness نتایج working tree شما را با baseline ذخیره‌شده در `bench/baselines/` مقایسه می‌کند و یک جدول مقایسه‌ای چاپ می‌کند. رگرسیون‌های بالاتر از noise floor اسکریپت را با exit code 1 خاتمه می‌دهند. نتیجه را در توضیحات PR قرار دهید.
+
+برای ذخیره یک baseline جدید از یک git ref مشخص:
+
+```bash
+bash bench/bench.sh --update <ref>   # مثلاً --update v1.3.0 یا --update HEAD
+```
 
 ---
 
