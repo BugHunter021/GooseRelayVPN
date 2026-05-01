@@ -1,0 +1,5 @@
+{
+  "server_host": "0.0.0.0",
+  "server_port": 8443,
+  "tunnel_key": "f5630023b9dfa3744115df6154b5e38a5127422fd6905f3faeebeb5f06fd015d"
+}
