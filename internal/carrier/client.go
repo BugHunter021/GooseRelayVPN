@@ -26,8 +26,19 @@ const (
 
 	// pollIdleSleep is the breather between polls when nothing is happening.
 	// 10ms instead of 50ms: keeps workers responsive to kick() misses and
-	// idle-slot retry at negligible CPU cost at true idle.
+	// idle-slot retry at negligible CPU cost at true idle. Adaptive backoff
+	// (see idleBackoff) extends this when consecutive polls return no work.
 	pollIdleSleep = 10 * time.Millisecond
+
+	// pureDownloadIdleCap caps concurrent idle long-polls in pure-download
+	// mode. Previously this was numWorkers-1: every downstream chunk woke
+	// every idle long-poll, but only one received the chunk — the rest
+	// returned empty and immediately re-POSTed, multiplying upload bandwidth
+	// by the number of waiting workers. With many endpoints this produced
+	// the bandwidth blowup reported in issue #41 (7GB up for 3GB down).
+	// Two slots gives one-slot redundancy during the pollIdleSleep re-entry
+	// window without amplifying the wake-storm.
+	pureDownloadIdleCap = 2
 
 	// pollTimeout is the per-request HTTP ceiling; should comfortably exceed
 	// the server's long-poll window (~25s).
@@ -300,6 +311,7 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) runWorker(ctx context.Context) {
+	consecutiveIdle := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -308,19 +320,41 @@ func (c *Client) runWorker(ctx context.Context) {
 		}
 		didWork := c.pollOnce(ctx)
 		c.gcDoneSessions()
-		if !didWork {
-			// Capture the wake channel before entering select so we cannot
-			// miss a Broadcast() that fires between drainAll() returning
-			// empty and us entering the wait.
-			wakeCh := c.wake.C()
-			select {
-			case <-ctx.Done():
-				return
-			case <-wakeCh:
-				// woken by new session data
-			case <-time.After(pollIdleSleep):
-			}
+		if didWork {
+			consecutiveIdle = 0
+			continue
 		}
+		consecutiveIdle++
+		// Capture the wake channel before entering select so we cannot
+		// miss a Broadcast() that fires between drainAll() returning
+		// empty and us entering the wait. The wake takes precedence over
+		// the timer, so backoff never delays the response to new TX.
+		wakeCh := c.wake.C()
+		select {
+		case <-ctx.Done():
+			return
+		case <-wakeCh:
+			consecutiveIdle = 0
+		case <-time.After(idleBackoff(consecutiveIdle)):
+		}
+	}
+}
+
+// idleBackoff returns how long a worker should sleep after n consecutive
+// no-work polls. The wake channel is selected against this timer so any
+// new TX (kick) cancels the sleep immediately and any held server-side
+// long-poll receives downstream chunks without needing a fresh poll —
+// so even a 1s tail does not add user-visible latency.
+func idleBackoff(n int) time.Duration {
+	switch {
+	case n < 3:
+		return pollIdleSleep
+	case n < 10:
+		return 50 * time.Millisecond
+	case n < 30:
+		return 250 * time.Millisecond
+	default:
+		return time.Second
 	}
 }
 
@@ -336,12 +370,16 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 	if isIdlePoll {
 		// Allow one idle long-poll slot per endpoint so each deployment can push
 		// downstream data concurrently. In pure-download mode (no pending TX)
-		// raise the cap to numWorkers-1 so most workers are long-polling for
-		// higher bulk throughput, reserving one for any TX that arrives.
+		// the previous setting was numWorkers-1 — but every downstream chunk
+		// woke every long-poll while only one received it, so the rest re-POSTed
+		// empty bodies and amplified upload bandwidth N-fold (issue #41). Cap
+		// pure-download mode at pureDownloadIdleCap (=2): one held slot is
+		// enough to receive pushes, the second covers the pollIdleSleep gap
+		// while the first re-enters.
 		c.mu.Lock()
 		idleCap := len(c.endpoints)
 		if len(c.txReady) == 0 {
-			idleCap = c.numWorkers - 1
+			idleCap = pureDownloadIdleCap
 		}
 		c.mu.Unlock()
 		if !c.acquireIdlePollSlot(idleCap) {

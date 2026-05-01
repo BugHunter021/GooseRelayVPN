@@ -217,3 +217,121 @@ func TestCarrier_FailsOverToHealthyScriptURLWithoutTxLoss(t *testing.T) {
 		t.Fatal("Run() did not return after cancel")
 	}
 }
+
+// TestCarrier_PureDownloadIdleCap is the regression test for issue #41
+// (excessive upload during downloads in v1.4.1). Before the fix, the
+// pure-download branch let numWorkers-1 workers each hold an idle long-poll
+// concurrently. Every downstream chunk woke all of them; only one received
+// the chunk while the rest re-POSTed empty bodies, multiplying upload
+// bandwidth by the worker count. Cap is now pureDownloadIdleCap regardless
+// of endpoint count, so the peak number of concurrent in-flight idle polls
+// must not exceed that constant even with many endpoints configured.
+func TestCarrier_PureDownloadIdleCap(t *testing.T) {
+	aead, err := frame.NewCryptoFromHexKey(testKeyHex)
+	if err != nil {
+		t.Fatalf("crypto: %v", err)
+	}
+
+	var (
+		mu       sync.Mutex
+		current  int
+		peak     int
+		totalReq int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		current++
+		totalReq++
+		if current > peak {
+			peak = current
+		}
+		mu.Unlock()
+		// Hold the request long enough that any racing worker gets a chance
+		// to attempt its own idle poll before this one returns. Long enough
+		// that a thundering herd would be visible in the peak count.
+		time.Sleep(400 * time.Millisecond)
+		mu.Lock()
+		current--
+		mu.Unlock()
+
+		// Empty batch response — keeps the client in pure-download mode.
+		var clientID [frame.ClientIDLen]byte
+		body, _ := frame.EncodeBatch(aead, clientID, nil)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	// Four distinct endpoints → numWorkers = workersPerEndpoint × 4 = 12.
+	// Pre-fix idleCap in pure-download mode would have been 11. New cap is
+	// pureDownloadIdleCap (=2).
+	urls := []string{
+		srv.URL + "/a", srv.URL + "/b", srv.URL + "/c", srv.URL + "/d",
+	}
+	c, err := New(Config{ScriptURLs: urls, AESKeyHex: testKeyHex})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	c.httpClients = []*http.Client{srv.Client()}
+
+	if c.numWorkers <= pureDownloadIdleCap+1 {
+		t.Fatalf("test setup: need numWorkers (%d) > pureDownloadIdleCap+1 (%d) "+
+			"to actually exercise the cap", c.numWorkers, pureDownloadIdleCap+1)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = c.Run(ctx)
+		close(done)
+	}()
+
+	// Let the workers spin for several poll cycles so the peak measurement is
+	// stable. With 400ms hold + 10ms re-entry, ~1.5s covers ≥3 cycles.
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not return after cancel")
+	}
+
+	mu.Lock()
+	gotPeak := peak
+	gotTotal := totalReq
+	mu.Unlock()
+
+	if gotPeak > pureDownloadIdleCap {
+		t.Fatalf("peak concurrent idle long-polls = %d, want ≤ %d "+
+			"(numWorkers=%d, len(endpoints)=%d, totalReq=%d)",
+			gotPeak, pureDownloadIdleCap, c.numWorkers, len(c.endpoints), gotTotal)
+	}
+	if gotPeak == 0 {
+		t.Fatal("no polls were issued; test did not exercise the cap")
+	}
+}
+
+// TestCarrier_IdleBackoffSchedule guards the adaptive backoff curve so a
+// future "tweak" cannot accidentally regress to a tight 10ms loop on idle
+// workers (the upload-amplification half of issue #41).
+func TestCarrier_IdleBackoffSchedule(t *testing.T) {
+	cases := []struct {
+		n    int
+		want time.Duration
+	}{
+		{0, pollIdleSleep},
+		{2, pollIdleSleep},
+		{3, 50 * time.Millisecond},
+		{9, 50 * time.Millisecond},
+		{10, 250 * time.Millisecond},
+		{29, 250 * time.Millisecond},
+		{30, time.Second},
+		{1000, time.Second},
+	}
+	for _, tc := range cases {
+		if got := idleBackoff(tc.n); got != tc.want {
+			t.Errorf("idleBackoff(%d) = %v, want %v", tc.n, got, tc.want)
+		}
+	}
+}
